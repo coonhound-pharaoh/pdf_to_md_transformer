@@ -1,0 +1,136 @@
+name: Build installers
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  APP_VERSION: "1.0.0"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install . pytest reportlab
+      - run: python tests/make_fixture.py
+      - run: python -m pytest tests -q
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install . pyinstaller
+      - name: Build executable
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name PDF-to-MD-Transformer
+          --icon assets/icon.ico
+          --paths src
+          --collect-data pdfminer
+          launcher.py
+      - name: Build installer (Inno Setup)
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\installer.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: installer-output/PDF-to-MD-Transformer-Setup-win-x64.exe
+
+  build-macos:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install . pyinstaller
+      - name: Build app bundle
+        run: >
+          pyinstaller --noconfirm --clean --windowed
+          --name "PDF to MD Transformer"
+          --paths src
+          --collect-data pdfminer
+          launcher.py
+      - name: Build DMG
+        run: |
+          mkdir -p dmgroot
+          cp -R "dist/PDF to MD Transformer.app" dmgroot/
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "PDF to MD Transformer" -srcfolder dmgroot -ov -format UDZO "dist/PDF-to-MD-Transformer-macOS.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/PDF-to-MD-Transformer-macOS.dmg
+
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system Python with Tk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk python3-venv python3-dev
+      - name: Build executable
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install . pyinstaller
+          .venv/bin/pyinstaller --noconfirm --clean --onefile \
+            --name PDF-to-MD-Transformer \
+            --paths src \
+            --collect-data pdfminer \
+            launcher.py
+      - name: Build .deb package
+        run: bash packaging/linux/build_deb.sh "${APP_VERSION}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/pdf-to-md-transformer_*.deb
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          ## PDF to MD Transformer
+
+          Deterministic, fully offline PDF-to-Markdown converter with a simple GUI.
+          Tables and sidebars are detected geometrically and placed inline; document
+          metadata is stripped from the output.
+
+          ### Downloads
+          - **Windows x64:** `PDF-to-MD-Transformer-Setup-win-x64.exe`
+          - **macOS:** `PDF-to-MD-Transformer-macOS.dmg`
+          - **Linux (Debian/Ubuntu):** `pdf-to-md-transformer_*_amd64.deb`
+
+          ---
+          *Release published by Claude (Claude Code, an AI agent by Anthropic),
+          acting as the authorized agent of Michael Macauley
+          (@coonhound-pharaoh) and on his behalf.*
+          EOF
+          gh release create "${GITHUB_REF_NAME}" artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "PDF to MD Transformer ${GITHUB_REF_NAME}" \
+            --notes-file notes.md

@@ -2,7 +2,7 @@
 # Build a .deb package from the PyInstaller binary (run on Linux in CI).
 set -euo pipefail
 
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.1.0}"
 ARCH="amd64"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PKG="$ROOT/pkgroot"
@@ -37,9 +37,12 @@ Section: text
 Priority: optional
 Architecture: $ARCH
 Maintainer: Michael Macauley <michael.j.macauley@gmail.com>
+Recommends: tesseract-ocr, tesseract-ocr-eng
 Description: Deterministic offline PDF to Markdown converter
  Converts PDF files to organized Markdown with tables and sidebars
  placed inline. Runs fully offline; document metadata is stripped.
+ Scanned (image-only) pages are converted with the Tesseract OCR
+ engine when tesseract-ocr is installed.
 EOF
 
 dpkg-deb --build --root-owner-group "$PKG" \

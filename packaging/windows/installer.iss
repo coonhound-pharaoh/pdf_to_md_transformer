@@ -2,7 +2,7 @@
 ; Built in CI: ISCC packaging\windows\installer.iss
 
 #define MyAppName "PDF to MD Transformer"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppExeName "PDF-to-MD-Transformer.exe"
 
 [Setup]
@@ -30,6 +30,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "..\..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+; Bundled Tesseract OCR engine (Apache-2.0), staged by CI into bundle\
+Source: "..\..\bundle\Tesseract-OCR\*"; DestDir: "{app}\Tesseract-OCR"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

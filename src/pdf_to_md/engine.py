@@ -1,56 +1,61 @@
 """Deterministic PDF -> Markdown conversion engine.
 
-Every step is mechanical geometry and typography analysis -- no ML, no
-network calls, no randomness.  The same input file always produces the
-same output file.
+Every step is mechanical geometry and typography analysis -- no ML
+inference beyond the deterministic Tesseract OCR engine for scanned
+pages, no network calls, no randomness.  The same input file with the
+same tool version always produces the same output file.
 
-Pipeline per page:
+Pipeline per page (vector path -- pages with a text layer):
   1. Detect ruled tables (pdfplumber lattice detection).
-  2. Detect sidebars: filled background rectangles that contain text and
-     are not part of a table.
-  3. Bucket every remaining word into "body" text.
+  2. Detect borderless "booktabs" tables (horizontal rules + column
+     alignment; see tables.py) -- the dominant style in scientific
+     journals.
+  3. Detect sidebars: filled background rectangles containing text.
   4. Rebuild lines from words, detect one- vs two-column layouts, and
-     order all elements (lines, tables, sidebars) into natural reading
-     order, placing tables and sidebars inline where they occur.
+     order all elements into natural reading order, placing tables and
+     sidebars inline where they occur.
   5. Classify headings and list items by font size / leading glyphs.
   6. Render GitHub-flavoured Markdown.
 
-Document metadata (Info dictionary, XMP, producer strings, etc.) is never
-read into the output -- only page content is emitted.
+Pages with no text layer (scanned papers) go through the OCR path
+(ocr.py): render at 300 dpi, deskew, Tesseract word boxes, pixel-level
+rule detection, then the exact same table reconstruction and layout
+pipeline.  OCR'd pages are marked with an HTML comment so downstream
+consumers know the provenance.
+
+Document metadata (Info dictionary, XMP, producer strings, etc.) is
+never read into the output -- only page content is emitted.
 """
 
 from __future__ import annotations
 
 import re
-import statistics
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional
 
 import pdfplumber
 
-BULLET_CHARS = "•◦·‣⁃∙-–—*"
-BULLET_RE = re.compile(r"^([•◦·‣⁃∙*]|\(cid:\d+\)|[-–—](?=\s))\s*")
+from .geometry import Line, clean_text, order_items, words_to_lines
+from .ocr import ocr_available, ocr_page, page_needs_ocr
+from .tables import (
+    find_h_rules_vector,
+    group_rule_regions,
+    lattice_table,
+    reconstruct_table,
+)
+
+BULLET_RE = re.compile(
+    "^([•◦·‣⁃∙*]"
+    r"|\(cid:\d+\)"
+    "|[-–—](?=\\s))\\s*"
+)
 NUMBERED_RE = re.compile(r"^(\d{1,3})[.)]\s+")
 
 
 # --------------------------------------------------------------------------
 # data model
 # --------------------------------------------------------------------------
-
-@dataclass
-class Line:
-    """One visual line of text."""
-    text: str
-    x0: float
-    x1: float
-    top: float
-    bottom: float
-    size: float          # median glyph size on the line
-    nchars: int
-
-    kind: str = "line"   # constant; used by the ordering code
-
 
 @dataclass
 class TableItem:
@@ -76,11 +81,8 @@ class SidebarItem:
 class PageStream:
     """Ordered content items for one page."""
     items: list = field(default_factory=list)
+    note: Optional[str] = None
 
-
-# --------------------------------------------------------------------------
-# geometry helpers
-# --------------------------------------------------------------------------
 
 def _center_in(bbox, x, y) -> bool:
     x0, top, x1, bottom = bbox
@@ -91,118 +93,8 @@ def _word_center(w):
     return ((w["x0"] + w["x1"]) / 2.0, (w["top"] + w["bottom"]) / 2.0)
 
 
-def _clean_text(s: str) -> str:
-    s = s.replace("\x00", "")
-    s = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", "", s)
-    return s.strip()
-
-
-def _words_to_lines(words) -> List[Line]:
-    """Group positioned words into visual lines (deterministic)."""
-    if not words:
-        return []
-    words = sorted(words, key=lambda w: (round(w["top"], 1), w["x0"]))
-    lines: List[Line] = []
-    current: List[dict] = []
-    for w in words:
-        if not current:
-            current = [w]
-            continue
-        ref = current[0]
-        # same line if vertical overlap of at least half the smaller height
-        h = min(ref["bottom"] - ref["top"], w["bottom"] - w["top"])
-        overlap = min(ref["bottom"], w["bottom"]) - max(ref["top"], w["top"])
-        if h > 0 and overlap >= 0.5 * h:
-            current.append(w)
-        else:
-            lines.append(_make_line(current))
-            current = [w]
-    if current:
-        lines.append(_make_line(current))
-    return [ln for ln in lines if ln.text]
-
-
-def _make_line(ws) -> Line:
-    ws = sorted(ws, key=lambda w: w["x0"])
-    text = _clean_text(" ".join(w["text"] for w in ws))
-    sizes = [float(w.get("size") or (w["bottom"] - w["top"])) for w in ws]
-    return Line(
-        text=text,
-        x0=min(w["x0"] for w in ws),
-        x1=max(w["x1"] for w in ws),
-        top=min(w["top"] for w in ws),
-        bottom=max(w["bottom"] for w in ws),
-        size=statistics.median(sizes),
-        nchars=sum(len(w["text"]) for w in ws),
-    )
-
-
 # --------------------------------------------------------------------------
-# reading order
-# --------------------------------------------------------------------------
-
-def _order_items(items: list, content_x0: float, content_x1: float) -> list:
-    """Order mixed items (lines / tables / sidebars) into reading order.
-
-    Detects a two-column body via an empty vertical gutter; full-width
-    items act as segment separators.  Falls back to plain top-to-bottom
-    ordering for single-column pages.
-    """
-    if not items:
-        return []
-    width = max(content_x1 - content_x0, 1.0)
-    fulls = [it for it in items if (it.x1 - it.x0) > 0.66 * width]
-    narrow = [it for it in items if (it.x1 - it.x0) <= 0.66 * width]
-
-    gutter = _find_gutter(narrow, content_x0, width)
-    if gutter is None:
-        return sorted(items, key=lambda it: (round(it.top, 1), it.x0))
-
-    fulls.sort(key=lambda it: it.top)
-
-    def seg_index(it) -> int:
-        i = 0
-        for f in fulls:
-            if f.bottom - 2 <= it.top:
-                i += 1
-        return i
-
-    ordered: list = []
-    for i in range(len(fulls) + 1):
-        if i > 0:
-            ordered.append(fulls[i - 1])
-        seg = [it for it in narrow if seg_index(it) == i]
-        left = sorted((it for it in seg if it.x1 <= gutter + 2), key=lambda it: it.top)
-        right = sorted((it for it in seg if it.x0 >= gutter - 2), key=lambda it: it.top)
-        ordered.extend(left)
-        ordered.extend(right)
-    return ordered
-
-
-def _find_gutter(narrow: list, content_x0: float, width: float) -> Optional[float]:
-    """Return the x of an empty vertical gutter if the page is two-column."""
-    if len(narrow) < 6:
-        return None
-    lo = content_x0 + 0.30 * width
-    hi = content_x0 + 0.70 * width
-    candidates = []
-    x = lo
-    while x <= hi:
-        if all(not (it.x0 - 2 < x < it.x1 + 2) for it in narrow):
-            candidates.append(x)
-        x += 3.0
-    if not candidates:
-        return None
-    gutter = statistics.median(candidates)
-    left = [it for it in narrow if it.x1 <= gutter + 2]
-    right = [it for it in narrow if it.x0 >= gutter - 2]
-    if len(left) >= 3 and len(right) >= 3 and len(left) + len(right) == len(narrow):
-        return gutter
-    return None
-
-
-# --------------------------------------------------------------------------
-# per-page parsing
+# vector path (pages with a text layer)
 # --------------------------------------------------------------------------
 
 def _detect_sidebar_regions(page, table_bboxes) -> List[tuple]:
@@ -232,42 +124,63 @@ def _detect_sidebar_regions(page, table_bboxes) -> List[tuple]:
     return regions
 
 
-def _extract_table_rows(table) -> List[List[str]]:
+def _extract_lattice_rows(table) -> List[List[str]]:
     rows = []
     for raw in table.extract():
         row = []
         for cell in raw:
             cell = "" if cell is None else str(cell)
-            cell = _clean_text(re.sub(r"\s+", " ", cell))
-            row.append(cell)
+            row.append(clean_text(re.sub(r"\s+", " ", cell)))
         rows.append(row)
-    # drop fully empty rows
-    rows = [r for r in rows if any(c for c in r)]
-    return rows
+    return [r for r in rows if any(c for c in r)]
 
 
-def _parse_page(page) -> PageStream:
+def _words_in_region(words, region, pad_x=2.0, pad_y=3.0):
+    x0, top, x1, bottom = region
+    inside, outside = [], []
+    for w in words:
+        cx, cy = _word_center(w)
+        if x0 - pad_x <= cx <= x1 + pad_x and top - pad_y <= cy <= bottom + pad_y:
+            inside.append(w)
+        else:
+            outside.append(w)
+    return inside, outside
+
+
+def _parse_page_vector(page) -> PageStream:
     stream = PageStream()
 
+    # 1. ruled (lattice) tables
     tables = page.find_tables()
     table_bboxes = [t.bbox for t in tables]
     table_items = []
     for t in tables:
-        rows = _extract_table_rows(t)
+        rows = _extract_lattice_rows(t)
         if rows:
             x0, top, x1, bottom = t.bbox
-            table_items.append(TableItem(rows=rows, x0=x0, x1=x1, top=top, bottom=bottom))
+            table_items.append(TableItem(rows, x0, x1, top, bottom))
 
     sidebar_regions = _detect_sidebar_regions(page, table_bboxes)
 
     words = page.extract_words(extra_attrs=["size"], keep_blank_chars=False)
+    words = [w for w in words
+             if not any(_center_in(tb, *_word_center(w)) for tb in table_bboxes)]
 
+    # 2. borderless (booktabs) tables between horizontal rules
+    h_rules = find_h_rules_vector(page)
+    for region in group_rule_regions(h_rules, skip_bboxes=table_bboxes):
+        inside, outside = _words_in_region(words, region)
+        rows = reconstruct_table(inside) if inside else None
+        if rows:
+            table_items.append(TableItem(rows, region[0], region[2],
+                                         region[1], region[3]))
+            words = outside  # consumed
+
+    # 3. sidebars
     body_words = []
     sidebar_words: List[list] = [[] for _ in sidebar_regions]
     for w in words:
         cx, cy = _word_center(w)
-        if any(_center_in(tb, cx, cy) for tb in table_bboxes):
-            continue  # rendered via the table item
         placed = False
         for i, region in enumerate(sidebar_regions):
             if _center_in(region, cx, cy):
@@ -282,19 +195,61 @@ def _parse_page(page) -> PageStream:
         if len(ws) < 4:
             body_words.extend(ws)  # decorative rect, not a sidebar
             continue
-        lines = _words_to_lines(ws)
-        lines = _order_items(lines, region[0], region[2])
-        sidebar_items.append(
-            SidebarItem(lines=lines, x0=region[0], x1=region[2], top=region[1], bottom=region[3])
-        )
+        lines = order_items(words_to_lines(ws), region[0], region[2])
+        sidebar_items.append(SidebarItem(lines=lines, x0=region[0], x1=region[2],
+                                         top=region[1], bottom=region[3]))
 
-    body_lines = _words_to_lines(body_words)
-
-    all_items = list(body_lines) + table_items + sidebar_items
+    # 4. reading order
+    all_items = list(words_to_lines(body_words)) + table_items + sidebar_items
     if all_items:
         content_x0 = min(it.x0 for it in all_items)
         content_x1 = max(it.x1 for it in all_items)
-        stream.items = _order_items(all_items, content_x0, content_x1)
+        stream.items = order_items(all_items, content_x0, content_x1)
+    return stream
+
+
+# --------------------------------------------------------------------------
+# OCR path (scanned pages)
+# --------------------------------------------------------------------------
+
+def _parse_page_ocr(page, page_number: int) -> PageStream:
+    stream = PageStream()
+    stream.note = (f"<!-- page {page_number}: no text layer; "
+                   f"converted with OCR (verify numbers against source) -->")
+
+    words, h_rules, v_rules = ocr_page(page)
+    if not words:
+        return stream
+
+    table_items = []
+    for region in group_rule_regions(h_rules):
+        inside, outside = _words_in_region(words, region, pad_y=1.0)
+        if not inside:
+            continue
+        x0, top, x1, bottom = region
+        interior_v = [
+            v for v in v_rules
+            if x0 - 2 <= v["x"] <= x1 + 2
+            and (min(v["bottom"], bottom) - max(v["top"], top))
+                >= 0.5 * (v["bottom"] - v["top"])
+        ]
+        region_h = sorted(r["top"] for r in h_rules
+                          if top - 1 <= r["top"] <= bottom + 1)
+        rows = None
+        if len(interior_v) >= 1 and len(region_h) >= 3:
+            col_xs = [x0 - 2] + sorted(v["x"] for v in interior_v) + [x1 + 2]
+            rows = lattice_table(inside, col_xs, region_h)
+        if rows is None:
+            rows = reconstruct_table(inside)
+        if rows:
+            table_items.append(TableItem(rows, x0, x1, top, bottom))
+            words = outside
+
+    all_items = list(words_to_lines(words)) + table_items
+    if all_items:
+        content_x0 = min(it.x0 for it in all_items)
+        content_x1 = max(it.x1 for it in all_items)
+        stream.items = order_items(all_items, content_x0, content_x1)
     return stream
 
 
@@ -453,6 +408,9 @@ class _Renderer:
         return ["\n".join(out)] if out else []
 
     def render_stream(self, stream: PageStream) -> None:
+        if stream.note:
+            self.blocks.append(stream.note)
+
         pending_lines: List[Line] = []
 
         def flush_lines():
@@ -488,7 +446,17 @@ def convert_pdf_to_markdown(
     with pdfplumber.open(pdf_path) as pdf:
         npages = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
-            streams.append(_parse_page(page))
+            if page_needs_ocr(page):
+                if ocr_available():
+                    streams.append(_parse_page_ocr(page, i + 1))
+                else:
+                    st = PageStream()
+                    st.note = (f"<!-- page {i + 1}: scanned image, no text "
+                               f"layer; OCR engine (Tesseract) not found, "
+                               f"page skipped -->")
+                    streams.append(st)
+            else:
+                streams.append(_parse_page_vector(page))
             if progress:
                 progress(i + 1, npages)
 

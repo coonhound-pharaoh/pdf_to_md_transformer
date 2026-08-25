@@ -14,6 +14,7 @@ from tkinter import filedialog, ttk
 
 from . import __version__
 from .engine import convert_file
+from .ocr import find_tesseract
 
 APP_TITLE = f"PDF to MD Transformer v{__version__}"
 
@@ -68,6 +69,14 @@ class App:
         # --- log -----------------------------------------------------------
         self.log = tk.Text(root, height=7, state="disabled", wrap="word")
         self.log.pack(fill="both", expand=False, **pad)
+
+        tess = find_tesseract()
+        if tess:
+            self.log_line(f"OCR engine found: {tess} (scanned pages supported)")
+        else:
+            self.log_line("OCR engine (Tesseract) not found -- scanned "
+                          "image-only pages will be skipped with a note. "
+                          "See README for install instructions.")
 
         self.root.after(100, self._poll_queue)
 

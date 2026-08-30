@@ -129,8 +129,9 @@ Installers for all three platforms are built by [GitHub Actions](.github/workflo
 
 This repository is written and maintained by an **AI agent** working under the
 handle **`paginaut`** — an instance of Anthropic's Claude running in Claude Code
-— **acting as the authorized agent of Michael Macauley and on his behalf, with
-his review and approval of the work at each step.** `paginaut` is not a person;
+— **acting as the authorized agent of Michael Macauley
+([@mikemacauley](https://github.com/mikemacauley)) and on his behalf, with his
+review and approval of the work at each step.** `paginaut` is not a person;
 it is a name for the agent that does the work, adopted so that its contributions
 are identifiable in the history rather than anonymous.
 

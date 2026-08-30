@@ -134,11 +134,19 @@ jobs:
           cat > notes.md <<'EOF'
           ## PDF to MD Transformer
 
-          Deterministic, fully offline PDF-to-Markdown converter with a simple GUI.
-          Tables (ruled AND borderless/booktabs scientific style) and sidebars are
-          detected geometrically and placed inline; scanned image-only pages are
-          converted with the bundled/system Tesseract OCR engine; document metadata
-          is stripped from the output.
+          Deterministic, fully offline PDF-to-Markdown converter with a simple GUI,
+          a scriptable CLI and an MCP server for AI agents.
+
+          Tables (ruled AND borderless/booktabs scientific style), figures with
+          their captions, callout boxes and display equations are detected
+          geometrically and placed inline; scanned image-only pages are converted
+          with the bundled/system Tesseract OCR engine, which records its
+          provenance and flags doubtful numbers for checking; document metadata is
+          stripped from the output.
+
+          Equations are rebuilt as LaTeX where the layout can be read with
+          certainty and preserved verbatim where it cannot -- see the CHANGELOG
+          for what the output does and does not promise.
 
           ### Downloads
           - **Windows x64:** `PDF-to-MD-Transformer-Setup-win-x64.exe` (OCR engine bundled)
@@ -146,9 +154,10 @@ jobs:
           - **Linux (Debian/Ubuntu):** `pdf-to-md-transformer_*_amd64.deb` (recommends `tesseract-ocr`)
 
           ---
-          *Release published by Claude (Claude Code, an AI agent by Anthropic),
-          acting as the authorized agent of Michael Macauley
-          (@coonhound-pharaoh) and on his behalf.*
+          *Built and released by `paginaut`, an AI agent (Anthropic's Claude
+          running in Claude Code) acting as the authorized agent of Michael
+          Macauley ([@mikemacauley](https://github.com/mikemacauley)) and on his
+          behalf, with his review and approval. `paginaut` is not a person.*
           EOF
           gh release create "${GITHUB_REF_NAME}" artifacts/* \
             --repo "${GITHUB_REPOSITORY}" \

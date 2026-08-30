@@ -2,7 +2,7 @@
 # Build a .deb package from the PyInstaller binary (run on Linux in CI).
 set -euo pipefail
 
-VERSION="${1:-1.1.0}"
+VERSION="${1:-1.2.0}"
 ARCH="amd64"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PKG="$ROOT/pkgroot"

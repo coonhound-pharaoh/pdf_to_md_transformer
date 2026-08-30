@@ -2,7 +2,7 @@
 ; Built in CI: ISCC packaging\windows\installer.iss
 
 #define MyAppName "PDF to MD Transformer"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppExeName "PDF-to-MD-Transformer.exe"
 
 [Setup]

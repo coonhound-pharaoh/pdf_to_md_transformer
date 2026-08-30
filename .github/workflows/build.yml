@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  APP_VERSION: "1.1.0"
+  APP_VERSION: "1.2.0"
 
 jobs:
   test:
@@ -25,6 +25,10 @@ jobs:
       - run: python tests/make_fixture.py
       - run: python tests/make_science_fixture.py
       - run: python tests/make_scanned_fixture.py
+      - run: python tests/make_figure_fixture.py
+      - run: python tests/make_sidebar_fixture.py
+      - run: python tests/make_equation_fixture.py
+      - run: python tests/make_latex_fixture.py
       - run: python -m pytest tests -q
         env:
           PDF2MD_REQUIRE_OCR: "1"

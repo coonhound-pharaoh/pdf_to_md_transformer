@@ -33,6 +33,9 @@ def main(argv=None) -> int:
                     help="output directory (default: alongside each PDF)")
     ap.add_argument("--stdout", action="store_true",
                     help="write Markdown to stdout instead of to .md files")
+    ap.add_argument("--extract-images", action="store_true",
+                    help="write figures as PNGs into <name>_assets/ next to "
+                         "the Markdown and link them (ignored with --stdout)")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="print a JSON report of the conversion to stdout")
     ap.add_argument("-q", "--quiet", action="store_true",
@@ -65,7 +68,8 @@ def main(argv=None) -> int:
                 outdir = args.outdir or os.path.dirname(os.path.abspath(pdf))
                 os.makedirs(outdir, exist_ok=True)
                 out = os.path.join(outdir, base)
-                convert_file(pdf, out)
+                convert_file(pdf, out,
+                             extract_images=args.extract_images)
                 entry.update(ok=True, output=out)
                 if not args.quiet:
                     print(f"OK  {pdf} -> {out}", file=log)

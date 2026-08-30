@@ -63,7 +63,9 @@ TOOLS = [
         "name": "convert_file",
         "description": (
             "Convert a PDF to Markdown and write it to disk. Use this instead "
-            "of convert_pdf for large documents. Returns the output path."
+            "of convert_pdf for large documents. Set extract_images to also "
+            "write each figure as a PNG beside the Markdown. Returns the "
+            "output path."
         ),
         "inputSchema": {
             "type": "object",
@@ -71,6 +73,12 @@ TOOLS = [
                 "path": {"type": "string", "description": "Path to the PDF."},
                 "out_path": {"type": "string",
                              "description": "Exact .md path to write."},
+                "extract_images": {
+                    "type": "boolean",
+                    "description": ("Also write each figure as a PNG into a "
+                                    "sibling <name>_assets/ directory and "
+                                    "link it from the Markdown."),
+                },
                 "outdir": {
                     "type": "string",
                     "description": ("Directory to write <name>.md into "
@@ -132,7 +140,8 @@ def _tool_convert_file(args: Dict[str, Any]) -> str:
         out_path = os.path.join(outdir, base)
     parent = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(parent, exist_ok=True)
-    convert_file(path, out_path)
+    convert_file(path, out_path,
+                 extract_images=bool(args.get('extract_images')))
     return json.dumps({"output": out_path,
                        "bytes": os.path.getsize(out_path)}, indent=2)
 

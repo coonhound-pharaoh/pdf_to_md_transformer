@@ -38,6 +38,7 @@ and `convert_file` tools instead of the shell — same engine, same results.
    ```bash
    pdf2md paper.pdf -o out/ --json     # JSON report on stdout
    pdf2md paper.pdf --stdout           # Markdown on stdout (short docs)
+   pdf2md paper.pdf -o out/ --extract-images   # figures as PNGs too
    ```
 
    Batch: pass several paths; exit code is 1 if any file failed, and the
@@ -54,7 +55,11 @@ and `convert_file` tools instead of the shell — same engine, same results.
   `PDF2MD_TESSERACT` at a binary.
 - OCR'd pages are marked `<!-- page N: … converted with OCR … -->`. Spot-check
   numbers on those pages against the source before relying on them.
-- Equations come through garbled; figures are omitted (captions survive).
+- Figures are anchored in place with their captions, but the images themselves
+  are only written out with `--extract-images` (into `<name>_assets/`). Without
+  it the Markdown carries `<!-- figure: … image not extracted -->` markers — say
+  so rather than implying the figures are in the output.
+- Equations come through garbled.
 - Re-running never changes the output — if it is wrong, the input or the tool
   needs attention, not another attempt.
 

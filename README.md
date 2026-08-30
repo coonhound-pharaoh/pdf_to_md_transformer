@@ -6,6 +6,7 @@ A free, open-source (MIT) desktop tool that **converts PDF files into clean, org
 - **Metadata is stripped.** Only page *content* reaches the output. The PDF's Info dictionary, XMP metadata, author/producer strings, etc. are never copied.
 - **Tables come through as Markdown tables**, placed inline exactly where they appear in the document flow — both fully ruled grids and the borderless *booktabs* style (horizontal rules only) used by virtually all scientific journals, reconstructed from column alignment.
 - **Scanned papers are supported.** Pages with no text layer are rendered at 300 dpi, deskewed, and read with the [Tesseract](https://github.com/tesseract-ocr/tesseract) OCR engine (Apache-2.0); ruled lines are recovered by pixel analysis so tables in old scans are reconstructed too. OCR'd pages are marked with an HTML comment (`<!-- page N: … converted with OCR … -->`) so downstream consumers know the provenance.
+- **Figures are anchored, not dropped.** Embedded images and vector illustrations are detected and placed in reading order with their caption bound to them (`Figure 3: …` above or below); `--extract-images` writes each one as a PNG into `<name>_assets/` and links it.
 - **Sidebars / callout boxes** (detected as filled background rectangles containing text) are rendered inline as blockquotes at their position in the reading order.
 - **Layout-aware:** two-column pages are re-flowed into natural reading order; headings are ranked by font size into `#`–`######`; bulleted and numbered lists are preserved; hyphenated line-wraps are repaired.
 - **Simple UI:** pick PDFs, pick an output folder, press *Convert*. A command-line interface (`pdf2md`) is included for scripting.
@@ -61,12 +62,13 @@ For each page with a text layer, the engine:
 2. Detects **borderless (booktabs) tables**: stacked horizontal rules bound a candidate region, column boundaries are found as vertical strips that no line of words crosses, and the grid is rebuilt from word positions. A candidate that doesn't convincingly form a table flows back into body text, so false positives can't destroy content.
 3. Detects **sidebars** as filled background rectangles containing text (outside any table).
 4. Rebuilds visual **lines** from positioned words (splitting side-by-side columns that share a baseline), finds the column gutter, and orders every element — paragraphs, tables, sidebars — into a single reading order.
-5. Ranks **headings** by dominant font size, folds wrapped lines into paragraphs (repairing end-of-line hyphenation), and recognizes bullet/numbered lists.
-6. Emits GitHub-flavoured Markdown. Nothing but page content is written.
+5. Detects **figures** (embedded rasters and clusters of vector drawing outside tables and sidebars), binds the nearest matching caption, and drops in-figure labels from the prose. A candidate region full of text is discarded so body copy can't be swallowed.
+6. Ranks **headings** by dominant font size, folds wrapped lines into paragraphs (repairing end-of-line hyphenation), and recognizes bullet/numbered lists.
+7. Emits GitHub-flavoured Markdown. Nothing but page content is written.
 
 Pages with **no text layer** (scanned papers) are rendered at 300 dpi, deskewed by projection-profile analysis, and read with Tesseract; ruled lines are recovered from pixel runs, and the exact same table-reconstruction and reading-order pipeline runs on the OCR word boxes.
 
-Limitations: output on OCR'd pages is reproducible per Tesseract version but numbers should be spot-checked against the source (the page-level OCR comment marks where); mathematical equations have no faithful plain-text representation and will come through garbled; figures are omitted (their captions come through as text); sidebar detection requires a filled background box.
+Limitations: output on OCR'd pages is reproducible per Tesseract version but numbers should be spot-checked against the source (the page-level OCR comment marks where); mathematical equations have no faithful plain-text representation and will come through garbled; figures are anchored in place with their captions but are only exported as images with `--extract-images` (equations rendered as figures are therefore images, not text); sidebar detection requires a filled background box.
 
 ## Development
 

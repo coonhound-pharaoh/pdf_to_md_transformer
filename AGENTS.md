@@ -35,7 +35,7 @@ Any client with an `mcpServers` config block (Claude Desktop, Codex, …):
 | Tool | Arguments | Returns |
 | --- | --- | --- |
 | `convert_pdf` | `path` (required), `max_chars` (default 200000) | the Markdown as text, truncated with an HTML comment if over the limit |
-| `convert_file` | `path` (required), `out_path` *or* `outdir` | JSON `{output, bytes}` — the written `.md` path |
+| `convert_file` | `path` (required), `out_path` *or* `outdir`, `extract_images` | JSON `{output, bytes}` — the written `.md` path |
 | `pdf_info` | `path` (required) | JSON `{pages, pages_needing_ocr, ocr_available}` |
 
 Tool failures come back as a normal result with `isError: true` and the error
@@ -48,6 +48,7 @@ pdf2md paper.pdf                  # -> paper.md next to the PDF
 pdf2md paper.pdf --stdout         # Markdown on stdout, nothing written
 pdf2md *.pdf -o out/ --json       # JSON report on stdout, logs on stderr
 pdf2md paper.pdf -o out/ --quiet  # no per-file progress lines
+pdf2md paper.pdf -o out/ --extract-images   # + figures as PNGs in out/paper_assets/
 ```
 
 - `--stdout` and `--json` are mutually exclusive.
@@ -92,7 +93,10 @@ Both accept `progress=lambda done, total: ...`.
 - OCR'd pages carry a `<!-- page N: … converted with OCR … -->` marker. Numbers
   on those pages should be spot-checked against the source before being relied
   on.
-- Equations come through garbled and figures are omitted (captions survive).
-  Don't present either as faithful.
+- Figures are anchored in reading order with their captions. By default they
+  appear as `<!-- figure: page N, WxHpt at (x,y); image not extracted -->`
+  followed by the caption; pass `extract_images` (MCP) or `--extract-images`
+  (CLI) to write real PNGs into `<name>_assets/` and link them.
+- Equations come through garbled. Don't present them as faithful.
 - Output is byte-identical across runs for the same input and version, so
   re-running to "get a better result" is pointless.

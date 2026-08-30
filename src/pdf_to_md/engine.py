@@ -29,6 +29,7 @@ never read into the output -- only page content is emitted.
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -36,6 +37,12 @@ from typing import Callable, List, Optional
 
 import pdfplumber
 
+from .figures import (
+    bind_caption,
+    caption_label,
+    detect_figure_regions,
+    extract_image,
+)
 from .geometry import Line, clean_text, order_items, words_to_lines
 from .ocr import ocr_available, ocr_page, page_needs_ocr
 from .tables import (
@@ -51,6 +58,10 @@ BULLET_RE = re.compile(
     "|[-–—](?=\\s))\\s*"
 )
 NUMBERED_RE = re.compile(r"^(\d{1,3})[.)]\s+")
+
+# A candidate figure region holding more words than this is text
+# over artwork, not a figure; it is discarded and the words stay.
+FIGURE_MAX_WORDS = 40
 
 
 # --------------------------------------------------------------------------
@@ -75,6 +86,20 @@ class SidebarItem:
     top: float = 0.0
     bottom: float = 0.0
     kind: str = "sidebar"
+
+
+@dataclass
+class FigureItem:
+    """An image or vector illustration, with its caption if one was found."""
+    x0: float
+    x1: float
+    top: float
+    bottom: float
+    page_number: int = 0
+    caption: Optional[str] = None
+    label: Optional[str] = None
+    href: Optional[str] = None
+    kind: str = "figure"
 
 
 @dataclass
@@ -147,7 +172,15 @@ def _words_in_region(words, region, pad_x=2.0, pad_y=3.0):
     return inside, outside
 
 
-def _parse_page_vector(page) -> PageStream:
+def _parse_page_vector(page, page_number: int = 0,
+                       assets=None) -> PageStream:
+    """Parse a page that has a text layer.
+
+    ``assets``, when given, is an ``(output_dir, href_prefix)`` pair;
+    figures are then rendered to PNG files in that directory and
+    linked from the Markdown.  Without it figures are marked with an
+    HTML comment and their caption is kept in place.
+    """
     stream = PageStream()
 
     # 1. ruled (lattice) tables
@@ -199,13 +232,57 @@ def _parse_page_vector(page) -> PageStream:
         sidebar_items.append(SidebarItem(lines=lines, x0=region[0], x1=region[2],
                                          top=region[1], bottom=region[3]))
 
-    # 4. reading order
-    all_items = list(words_to_lines(body_words)) + table_items + sidebar_items
+    # 4. figures: images and vector-drawing clusters outside tables/sidebars
+    figure_regions = detect_figure_regions(
+        page, exclude_bboxes=list(table_bboxes) + list(sidebar_regions))
+    kept_regions = []
+    for region in figure_regions:
+        inside, outside = _words_in_region(body_words, region,
+                                           pad_x=0.0, pad_y=0.0)
+        if len(inside) > FIGURE_MAX_WORDS:
+            continue  # text over artwork, not a figure -- leave it as body
+        kept_regions.append(region)
+        body_words = outside  # in-figure labels don't belong in the prose
+
+    lines = list(words_to_lines(body_words))
+    figure_items = _build_figures(page, page_number, kept_regions, lines, assets)
+    lines = [ln for ln in lines if ln is not None]
+
+    # 5. reading order
+    all_items = lines + table_items + sidebar_items + figure_items
     if all_items:
         content_x0 = min(it.x0 for it in all_items)
         content_x1 = max(it.x1 for it in all_items)
         stream.items = order_items(all_items, content_x0, content_x1)
     return stream
+
+
+def _build_figures(page, page_number, regions, lines, assets) -> List[FigureItem]:
+    """Make FigureItems, consuming caption lines out of ``lines`` in place."""
+    items = []
+    for n, region in enumerate(regions, start=1):
+        idx = bind_caption(region, [ln for ln in lines if ln is not None])
+        caption = label = None
+        if idx is not None:
+            present = [i for i, ln in enumerate(lines) if ln is not None]
+            real = present[idx]
+            caption = lines[real].text
+            label = caption_label(caption)
+            lines[real] = None  # consumed: never repeat it as a paragraph
+        href = None
+        if assets is not None:
+            outdir, prefix = assets
+            name = f"p{page_number}-fig{n}.png"
+            os.makedirs(outdir, exist_ok=True)
+            try:
+                extract_image(page, region, os.path.join(outdir, name))
+                href = f"{prefix}/{name}" if prefix else name
+            except Exception:
+                href = None  # rendering unavailable; fall back to a marker
+        items.append(FigureItem(
+            x0=region[0], x1=region[2], top=region[1], bottom=region[3],
+            page_number=page_number, caption=caption, label=label, href=href))
+    return items
 
 
 # --------------------------------------------------------------------------
@@ -271,6 +348,26 @@ def _render_table(rows: List[List[str]]) -> str:
     for r in rows[1:]:
         out.append("| " + " | ".join(_escape_cell(c) for c in r) + " |")
     return "\n".join(out)
+
+
+def _render_figure(fig) -> List[str]:
+    """A figure becomes an image link, or a marker plus its caption."""
+    alt = fig.caption or fig.label or "Figure"
+    if fig.href:
+        return ["![" + _escape_link_text(alt) + "](" + fig.href + ")"]
+    w = fig.x1 - fig.x0
+    h = fig.bottom - fig.top
+    marker = (f"<!-- figure: page {fig.page_number}, "
+              f"{w:.0f}x{h:.0f}pt at ({fig.x0:.0f},{fig.top:.0f}); "
+              f"image not extracted -->")
+    blocks = [marker]
+    if fig.caption:
+        blocks.append("*" + fig.caption + "*")
+    return blocks
+
+
+def _escape_link_text(s: str) -> str:
+    return s.replace("[", "\\[").replace("]", "\\]")
 
 
 def _join_par(lines: List[str]) -> str:
@@ -430,6 +527,9 @@ class _Renderer:
                 quoted = self.render_lines(it.lines, quote=True)
                 if quoted:
                     self.blocks.append("\n>\n".join(quoted))
+            elif it.kind == "figure":
+                flush_lines()
+                self.blocks.extend(_render_figure(it))
         flush_lines()
 
 
@@ -440,8 +540,18 @@ class _Renderer:
 def convert_pdf_to_markdown(
     pdf_path: str,
     progress: Optional[Callable[[int, int], None]] = None,
+    assets_dir: Optional[str] = None,
+    assets_href: Optional[str] = None,
 ) -> str:
-    """Convert one PDF file to a Markdown string (content only)."""
+    """Convert one PDF file to a Markdown string (content only).
+
+    When ``assets_dir`` is given, figures are rendered to PNG files in
+    that directory and linked from the Markdown using ``assets_href`` as
+    the link prefix (which should be relative to wherever the Markdown
+    will live).  Otherwise each figure is marked with an HTML comment and
+    its caption is emitted in place.
+    """
+    assets = (assets_dir, assets_href) if assets_dir else None
     streams: List[PageStream] = []
     with pdfplumber.open(pdf_path) as pdf:
         npages = len(pdf.pages)
@@ -456,7 +566,7 @@ def convert_pdf_to_markdown(
                                f"page skipped -->")
                     streams.append(st)
             else:
-                streams.append(_parse_page_vector(page))
+                streams.append(_parse_page_vector(page, i + 1, assets))
             if progress:
                 progress(i + 1, npages)
 
@@ -485,8 +595,22 @@ def convert_pdf_to_markdown(
 
 
 def convert_file(pdf_path: str, out_path: str,
-                 progress: Optional[Callable[[int, int], None]] = None) -> str:
-    md = convert_pdf_to_markdown(pdf_path, progress=progress)
+                 progress: Optional[Callable[[int, int], None]] = None,
+                 extract_images: bool = False) -> str:
+    """Convert ``pdf_path`` and write the Markdown to ``out_path``.
+
+    With ``extract_images``, figures are written as PNGs into a sibling
+    ``<name>_assets/`` directory and linked from the Markdown.
+    """
+    assets_dir = assets_href = None
+    if extract_images:
+        stem = os.path.splitext(os.path.basename(out_path))[0]
+        assets_href = stem + "_assets"
+        assets_dir = os.path.join(
+            os.path.dirname(os.path.abspath(out_path)), assets_href)
+    md = convert_pdf_to_markdown(pdf_path, progress=progress,
+                                 assets_dir=assets_dir,
+                                 assets_href=assets_href)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(md)
     return out_path

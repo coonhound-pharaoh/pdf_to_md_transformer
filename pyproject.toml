@@ -28,6 +28,7 @@ dev = ["pytest", "reportlab", "pyinstaller"]
 
 [project.scripts]
 pdf2md = "pdf_to_md.cli:main"
+pdf2md-mcp = "pdf_to_md.mcp_server:main"
 
 [project.gui-scripts]
 pdf2md-gui = "pdf_to_md.gui:main"

@@ -32,6 +32,27 @@ pdf2md-gui          # GUI
 pdf2md file.pdf     # CLI -> file.md next to the PDF
 ```
 
+## Use from an AI agent
+
+The tool is fully drivable by an AI agent (Claude Code, Codex, …) as well as by
+hand — same engine, same deterministic output.
+
+**MCP server** (`pdf2md-mcp`, JSON-RPC over stdio, no extra dependencies):
+
+```
+claude mcp add pdf2md -- pdf2md-mcp
+```
+
+exposing `convert_pdf` (PDF -> Markdown text), `convert_file` (PDF -> `.md` on
+disk) and `pdf_info` (page count, which pages need OCR, OCR availability).
+
+**Scriptable CLI:** `--stdout` emits the Markdown, `--json` emits a
+machine-readable per-file report (stdout carries only the payload; logs go to
+stderr), and the exit code is non-zero if any file failed.
+
+A bundled Claude skill in `.claude/skills/pdf-to-markdown/` makes the agent
+reach for the tool automatically. Full interface reference: [AGENTS.md](AGENTS.md).
+
 ## How it works
 
 For each page with a text layer, the engine:

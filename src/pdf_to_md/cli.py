@@ -37,6 +37,9 @@ def main(argv=None) -> int:
     ap.add_argument("--extract-images", action="store_true",
                     help="write figures as PNGs into <name>_assets/ next to "
                          "the Markdown and link them (ignored with --stdout)")
+    ap.add_argument("--no-math-latex", action="store_true",
+                    help="never reconstruct equations as LaTeX; always emit "
+                         "the verbatim glyph run instead")
     ap.add_argument("--ocr-lang", default="eng",
                     help="Tesseract language for scanned pages (default: eng)")
     ap.add_argument("--ocr-dpi", type=int, default=300,
@@ -78,8 +81,9 @@ def main(argv=None) -> int:
         try:
             if args.stdout:
                 sys.stdout.write(
-                    convert_pdf_to_markdown(pdf,
-                                            ocr_options=ocr_options))
+                    convert_pdf_to_markdown(
+                        pdf, ocr_options=ocr_options,
+                        reconstruct_math=not args.no_math_latex))
                 entry["ok"] = True
             else:
                 base = os.path.splitext(os.path.basename(pdf))[0] + ".md"
@@ -88,7 +92,8 @@ def main(argv=None) -> int:
                 out = os.path.join(outdir, base)
                 convert_file(pdf, out,
                              extract_images=args.extract_images,
-                             ocr_options=ocr_options)
+                             ocr_options=ocr_options,
+                             reconstruct_math=not args.no_math_latex)
                 entry.update(ok=True, output=out)
                 if not args.quiet:
                     print(f"OK  {pdf} -> {out}", file=log)

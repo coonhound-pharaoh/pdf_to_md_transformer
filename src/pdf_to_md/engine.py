@@ -48,8 +48,10 @@ from .equations import (
     equation_tag,
     is_equation_line,
     render_equation,
+    render_latex,
 )
 from .geometry import Line, clean_text, order_items, words_to_lines
+from .mathparse import bars_in_region, reconstruct
 from .sidebars import (
     block_bbox,
     detect_boxed_regions,
@@ -121,6 +123,19 @@ class FigureItem:
 
 
 @dataclass
+class EquationItem:
+    """A displayed equation: verbatim glyphs, plus LaTeX when it is certain."""
+    verbatim: List[str]
+    x0: float
+    x1: float
+    top: float
+    bottom: float
+    tag: Optional[str] = None
+    latex: Optional[str] = None
+    kind: str = "equation"
+
+
+@dataclass
 class PageStream:
     """Ordered content items for one page."""
     items: list = field(default_factory=list)
@@ -165,7 +180,8 @@ def _words_in_region(words, region, pad_x=2.0, pad_y=3.0):
 
 
 def _parse_page_vector(page, page_number: int = 0,
-                       assets=None) -> PageStream:
+                       assets=None,
+                       reconstruct_math: bool = True) -> PageStream:
     """Parse a page that has a text layer.
 
     ``assets``, when given, is an ``(output_dir, href_prefix)`` pair;
@@ -241,17 +257,170 @@ def _parse_page_vector(page, page_number: int = 0,
     figure_items = _build_figures(page, page_number, kept_regions, lines, assets)
     lines = [ln for ln in lines if ln is not None]
 
-    # 5. unboxed callouts: inset, typographically distinct runs of lines
+    # 5. displayed equations, reconstructed from glyph geometry where certain
+    lines, equation_items = _split_equations(
+        page, lines,
+        exclude_bboxes=list(table_bboxes) + list(sidebar_regions),
+        reconstruct_math=reconstruct_math)
+
+    # 6. unboxed callouts: inset, typographically distinct runs of lines
     lines, unboxed = _split_typographic_sidebars(lines)
     sidebar_items.extend(unboxed)
 
-    # 6. reading order
-    all_items = lines + table_items + sidebar_items + figure_items
+    # 7. reading order
+    all_items = (lines + table_items + sidebar_items + figure_items
+                 + equation_items)
     if all_items:
         content_x0 = min(it.x0 for it in all_items)
         content_x1 = max(it.x1 for it in all_items)
         stream.items = order_items(all_items, content_x0, content_x1)
     return stream
+
+
+EQUATION_PAD = 2.0
+
+
+FRACTION_REACH = 200.0      # pt; how far from a bar an equation may extend
+
+
+def _fraction_bands(page, lines, exclude_bboxes):
+    """Vertical bands occupied by a fraction (a rule with text above and below).
+
+    A fraction built from ordinary letters carries no mathematical glyphs
+    at all, so the typographic signal cannot see it; the rule itself is
+    the evidence.
+    """
+    bands = []
+    max_bar = 0.6 * float(page.width)
+    for bar in bars_in_region(page, (0, 0, page.width, page.height)):
+        if bar.width > max_bar:
+            continue                      # a full-width rule is a separator
+        if any(bx0 <= bar.cx <= bx1 and btop <= bar.y <= bbot
+               for bx0, btop, bx1, bbot in exclude_bboxes):
+            continue
+        near = [ln for ln in lines
+                if ln.x0 >= bar.x0 - 4 and ln.x1 <= bar.x1 + 4
+                and abs((ln.top + ln.bottom) / 2 - bar.y)
+                <= 3 * (ln.bottom - ln.top)]
+        above = [ln for ln in near if ln.bottom <= bar.y + 1]
+        below = [ln for ln in near if ln.top >= bar.y - 1]
+        if not above or not below:
+            continue                      # an overline or an underline, not a
+        bands.append((bar, min(ln.top for ln in near),   # fraction
+                      max(ln.bottom for ln in near)))
+    return bands
+
+
+def _in_band(line, band) -> bool:
+    bar, top, bottom = band
+    if line.bottom < top - 1 or line.top > bottom + 1:
+        return False
+    return abs((line.x0 + line.x1) / 2 - bar.cx) <= FRACTION_REACH
+
+
+def _split_equations(page, lines, exclude_bboxes=(),
+                     reconstruct_math: bool = True):
+    """Pull runs of equation lines out of the body into EquationItems."""
+    ordered = sorted(lines, key=lambda ln: (round(ln.top, 1), ln.x0))
+    bands = _fraction_bands(page, ordered, exclude_bboxes)
+
+    def is_equation(ln) -> bool:
+        return (is_equation_line(ln.text, ln.math)
+                or any(_in_band(ln, b) for b in bands))
+
+    items, taken = [], set()
+    i = 0
+    while i < len(ordered):
+        if not is_equation(ordered[i]):
+            i += 1
+            continue
+        run, tag, label_line = [], None, None
+        while i < len(ordered) and is_equation(ordered[i]):
+            run.append(ordered[i])
+            tag = tag or equation_tag(ordered[i].text)
+            i += 1
+        # a right-aligned "(3)" beside the equation is its number, so it
+        # belongs to the equation's region but not to its content
+        if i < len(ordered) and tag is None:
+            nxt = ordered[i]
+            if bare_tag(nxt.text) and nxt.top < run[-1].bottom \
+                    and nxt.bottom > run[-1].top:
+                tag = bare_tag(nxt.text)
+                label_line = nxt
+                run.append(nxt)
+                i += 1
+        run = _absorb_stacked(run, ordered, taken)
+        region = (min(l.x0 for l in run) - EQUATION_PAD,
+                  min(l.top for l in run) - EQUATION_PAD,
+                  max(l.x1 for l in run) + EQUATION_PAD,
+                  max(l.bottom for l in run) + EQUATION_PAD)
+        taken.update(id(l) for l in run)
+        items.append(EquationItem(
+            verbatim=[l.text for l in run if l is not label_line],
+            x0=region[0], top=region[1], x1=region[2], bottom=region[3],
+            tag=tag,
+            latex=(_reconstruct_region(page, region)
+                   if reconstruct_math else None)))
+    remaining = [ln for ln in lines if id(ln) not in taken]
+    return remaining, items
+
+
+STACK_GROW = 1.2            # line heights of headroom for limits and scripts
+
+
+def _absorb_stacked(run, ordered, taken):
+    """Take in material stacked above or below the equation.
+
+    An operator's limits and a fraction's halves are separate visual
+    lines, and on their own they look like ordinary short lines.  They
+    are pulled in when they sit inside the equation's own column -- a
+    body paragraph runs to the margin and so cannot be absorbed.
+    """
+    height = max((l.bottom - l.top) for l in run)
+    x0 = min(l.x0 for l in run) - EQUATION_PAD
+    x1 = max(l.x1 for l in run) + EQUATION_PAD
+    top = min(l.top for l in run) - STACK_GROW * height
+    bottom = max(l.bottom for l in run) + STACK_GROW * height
+    inside = [ln for ln in ordered
+              if ln not in run and id(ln) not in taken
+              and ln.x0 >= x0 - EQUATION_PAD and ln.x1 <= x1 + EQUATION_PAD
+              and ln.top >= top and ln.bottom <= bottom]
+    return sorted(run + inside, key=lambda l: (round(l.top, 1), l.x0))
+
+
+def _reconstruct_region(page, region) -> Optional[str]:
+    """LaTeX for an equation region, or None when it isn't certain."""
+    x0, top, x1, bottom = region
+    chars = [ch for ch in page.chars
+             if x0 <= (ch["x0"] + ch["x1"]) / 2 <= x1
+             and top <= (ch["top"] + ch["bottom"]) / 2 <= bottom]
+    if not chars:
+        return None
+    # the equation number is a label on the equation, not part of it
+    label_start = _label_start(chars)
+    if label_start is not None:
+        chars = [ch for ch in chars if ch["x1"] <= label_start]
+    if not chars:
+        return None
+    return reconstruct(chars, bars_in_region(page, region))
+
+
+def _label_start(chars) -> Optional[float]:
+    """x where a trailing "(3)" label begins, if the row ends with one."""
+    ordered = sorted(chars, key=lambda ch: ch["x0"])
+    text, owner = "", []
+    for ch in ordered:                     # a glyph can decode to several
+        piece = ch["text"] or ""           # characters, so map back by index
+        text += piece
+        owner.extend([ch] * len(piece))
+    m = re.search(r"[\(\[][^()\[\]]{1,6}[\)\]]\s*$", text)
+    if not m or m.start() >= len(owner):
+        return None
+    start = owner[m.start()]
+    prev = owner[m.start() - 1] if m.start() > 0 else None
+    if prev is None or start["x0"] - prev["x1"] < 12:
+        return None                        # a label is set clear of the maths
+    return start["x0"] - 0.5
 
 
 def _split_typographic_sidebars(lines):
@@ -469,27 +638,6 @@ class _Renderer:
                 i += 1
                 continue
 
-            if is_equation_line(text, ln.math):
-                flush()
-                # consecutive equation lines are one displayed equation
-                texts, tag = [], None
-                while i < len(lines) and is_equation_line(lines[i].text,
-                                                          lines[i].math):
-                    texts.append(lines[i].text)
-                    tag = tag or equation_tag(lines[i].text)
-                    last = lines[i]
-                    i += 1
-                # a right-aligned "(3)" sitting beside the equation is its
-                # number, not a paragraph of its own
-                if i < len(lines) and tag is None:
-                    nxt = lines[i]
-                    if bare_tag(nxt.text) and nxt.top < last.bottom \
-                            and nxt.bottom > last.top:
-                        tag = bare_tag(nxt.text)
-                        i += 1
-                blocks.append(render_equation(texts, tag))
-                continue
-
             if self._is_heading(ln):
                 flush()
                 # merge immediately-following heading lines of the same size
@@ -595,6 +743,12 @@ class _Renderer:
             elif it.kind == "figure":
                 flush_lines()
                 self.blocks.extend(_render_figure(it))
+            elif it.kind == "equation":
+                flush_lines()
+                if it.latex:
+                    self.blocks.append(render_latex(it.latex, it.tag))
+                else:
+                    self.blocks.append(render_equation(it.verbatim, it.tag))
         flush_lines()
 
 
@@ -608,6 +762,7 @@ def convert_pdf_to_markdown(
     assets_dir: Optional[str] = None,
     assets_href: Optional[str] = None,
     ocr_options: Optional[OcrOptions] = None,
+    reconstruct_math: bool = True,
 ) -> str:
     """Convert one PDF file to a Markdown string (content only).
 
@@ -634,7 +789,9 @@ def convert_pdf_to_markdown(
                                f"page skipped -->")
                     streams.append(st)
             else:
-                streams.append(_parse_page_vector(page, i + 1, assets))
+                streams.append(_parse_page_vector(
+                    page, i + 1, assets,
+                    reconstruct_math=reconstruct_math))
             if progress:
                 progress(i + 1, npages)
 
@@ -665,7 +822,8 @@ def convert_pdf_to_markdown(
 def convert_file(pdf_path: str, out_path: str,
                  progress: Optional[Callable[[int, int], None]] = None,
                  extract_images: bool = False,
-                 ocr_options: Optional[OcrOptions] = None) -> str:
+                 ocr_options: Optional[OcrOptions] = None,
+                 reconstruct_math: bool = True) -> str:
     """Convert ``pdf_path`` and write the Markdown to ``out_path``.
 
     With ``extract_images``, figures are written as PNGs into a sibling
@@ -680,7 +838,8 @@ def convert_file(pdf_path: str, out_path: str,
     md = convert_pdf_to_markdown(pdf_path, progress=progress,
                                  assets_dir=assets_dir,
                                  assets_href=assets_href,
-                                 ocr_options=ocr_options)
+                                 ocr_options=ocr_options,
+                                 reconstruct_math=reconstruct_math)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(md)
     return out_path

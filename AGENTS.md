@@ -103,12 +103,15 @@ Both accept `progress=lambda done, total: ...`.
   appear as `<!-- figure: page N, WxHpt at (x,y); image not extracted -->`
   followed by the caption; pass `extract_images` (MCP) or `--extract-images`
   (CLI) to write real PNGs into `<name>_assets/` and link them.
-- Display equations appear as ```` ```equation ```` blocks preceded by a comment
-  saying the glyphs are not a faithful transcription. Never re-present that
-  content as a formula, and never "tidy it up" into LaTeX — it is a glyph
-  dump, and the operators and scripts in it are frequently wrong or missing.
-  Inline maths inside a paragraph is *not* detected and still comes through
-  garbled.
+- Equations come through one of two ways, and the comment above each block says
+  which. `$$ … $$` after "reconstructed from glyph geometry" is real LaTeX
+  rebuilt from the positions of the glyphs — usable, but inferred from layout,
+  so say so if the user is relying on it. A ```` ```equation ```` block is a raw
+  glyph dump the parser refused to interpret: never re-present it as a formula
+  and never tidy it into LaTeX yourself, because the operators and scripts in it
+  are frequently wrong or missing.
+- Inline maths inside a paragraph is *not* detected and still comes through
+  garbled. `--no-math-latex` turns reconstruction off entirely.
 - Callouts (shaded panels, ruled boxes, unboxed pull quotes) come through as
   blockquotes in place. A callout that is merely indented, with no change of
   size or face, is not detected and reads as an ordinary paragraph.

@@ -146,3 +146,17 @@ def render_equation(texts: List[str], tag: Optional[str]) -> str:
             f"not a faithful transcription -->")
     body = "\n".join(t for t in texts if t.strip())
     return note + "\n```equation\n" + body + "\n```"
+
+
+def render_latex(latex: str, tag: Optional[str]) -> str:
+    """A reconstructed equation, labelled as reconstructed.
+
+    Unlike the verbatim fence this really is LaTeX, so it is emitted as a
+    maths block -- but the comment still says where it came from, because
+    a reconstruction is inference from layout, not a transcript the PDF
+    ever contained.
+    """
+    label = f"equation {tag}" if tag else "equation"
+    note = (f"<!-- {label}: reconstructed from glyph geometry; "
+            f"check against the source -->")
+    return note + "\n$$\n" + latex + "\n$$"

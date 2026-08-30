@@ -109,5 +109,8 @@ Both accept `progress=lambda done, total: ...`.
   dump, and the operators and scripts in it are frequently wrong or missing.
   Inline maths inside a paragraph is *not* detected and still comes through
   garbled.
+- Callouts (shaded panels, ruled boxes, unboxed pull quotes) come through as
+  blockquotes in place. A callout that is merely indented, with no change of
+  size or face, is not detected and reads as an ordinary paragraph.
 - Output is byte-identical across runs for the same input and version, so
   re-running to "get a better result" is pointless.

@@ -50,6 +50,12 @@ from .equations import (
     render_equation,
 )
 from .geometry import Line, clean_text, order_items, words_to_lines
+from .sidebars import (
+    block_bbox,
+    detect_boxed_regions,
+    detect_typographic_blocks,
+    dominant_body_size,
+)
 from .ocr import (
     OcrOptions,
     ocr_available,
@@ -135,33 +141,6 @@ def _word_center(w):
 # vector path (pages with a text layer)
 # --------------------------------------------------------------------------
 
-def _detect_sidebar_regions(page, table_bboxes) -> List[tuple]:
-    """Filled rectangles big enough to be callout boxes, outside tables."""
-    page_area = page.width * page.height
-    regions = []
-    rects = sorted(
-        (r for r in page.rects if r.get("fill")),
-        key=lambda r: (r["x1"] - r["x0"]) * (r["bottom"] - r["top"]),
-        reverse=True,
-    )
-    for r in rects:
-        w = r["x1"] - r["x0"]
-        h = r["bottom"] - r["top"]
-        if w < 90 or h < 30:
-            continue
-        area = w * h
-        if area > 0.85 * page_area or area < 0.01 * page_area:
-            continue
-        bbox = (r["x0"], r["top"], r["x1"], r["bottom"])
-        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-        if any(_center_in(tb, cx, cy) for tb in table_bboxes):
-            continue
-        if any(_center_in(existing, cx, cy) for existing in regions):
-            continue  # nested inside an already-kept region
-        regions.append(bbox)
-    return regions
-
-
 def _extract_lattice_rows(table) -> List[List[str]]:
     rows = []
     for raw in table.extract():
@@ -206,7 +185,7 @@ def _parse_page_vector(page, page_number: int = 0,
             x0, top, x1, bottom = t.bbox
             table_items.append(TableItem(rows, x0, x1, top, bottom))
 
-    sidebar_regions = _detect_sidebar_regions(page, table_bboxes)
+    sidebar_regions = detect_boxed_regions(page, table_bboxes)
 
     words = page.extract_words(extra_attrs=["size", "fontname"],
                                keep_blank_chars=False)
@@ -262,13 +241,38 @@ def _parse_page_vector(page, page_number: int = 0,
     figure_items = _build_figures(page, page_number, kept_regions, lines, assets)
     lines = [ln for ln in lines if ln is not None]
 
-    # 5. reading order
+    # 5. unboxed callouts: inset, typographically distinct runs of lines
+    lines, unboxed = _split_typographic_sidebars(lines)
+    sidebar_items.extend(unboxed)
+
+    # 6. reading order
     all_items = lines + table_items + sidebar_items + figure_items
     if all_items:
         content_x0 = min(it.x0 for it in all_items)
         content_x1 = max(it.x1 for it in all_items)
         stream.items = order_items(all_items, content_x0, content_x1)
     return stream
+
+
+def _split_typographic_sidebars(lines):
+    """Pull unboxed callout blocks out of the body lines into sidebars."""
+    body_size = dominant_body_size(lines)
+    if body_size is None:
+        return lines, []
+    ordered = sorted(lines, key=lambda ln: (round(ln.top, 1), ln.x0))
+    blocks = detect_typographic_blocks(ordered, float(body_size))
+    if not blocks:
+        return lines, []
+    taken = set()
+    items = []
+    for start, end in blocks:
+        run = ordered[start:end]
+        taken.update(id(ln) for ln in run)
+        x0, top, x1, bottom = block_bbox(run)
+        items.append(SidebarItem(lines=run, x0=x0, x1=x1,
+                                 top=top, bottom=bottom))
+    remaining = [ln for ln in lines if id(ln) not in taken]
+    return remaining, items
 
 
 def _build_figures(page, page_number, regions, lines, assets) -> List[FigureItem]:

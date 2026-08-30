@@ -35,6 +35,7 @@ class Line:
     size: float          # median glyph size on the line
     nchars: int
     math: float = 0.0    # fraction of glyphs that look mathematical
+    font: str = ""       # most common font on the line (vector path only)
 
     kind: str = "line"   # constant; used by the ordering code
 
@@ -87,6 +88,13 @@ def words_to_line_groups(words, split_columns: bool = False) -> List[List[dict]]
     return out
 
 
+def _dominant_font(ws) -> str:
+    fonts = [w.get("fontname") for w in ws if w.get("fontname")]
+    if not fonts:
+        return ""
+    return statistics.mode(fonts) if len(set(fonts)) > 1 else fonts[0]
+
+
 def make_line(ws) -> Line:
     ws = sorted(ws, key=lambda w: w["x0"])
     text = clean_text(" ".join(w["text"] for w in ws))
@@ -100,6 +108,7 @@ def make_line(ws) -> Line:
         size=statistics.median(sizes),
         nchars=sum(len(w["text"]) for w in ws),
         math=math_evidence(ws),
+        font=_dominant_font(ws),
     )
 
 

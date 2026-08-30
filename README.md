@@ -8,7 +8,7 @@ A free, open-source (MIT) desktop tool that **converts PDF files into clean, org
 - **Scanned papers are supported.** Pages with no text layer are rendered at 300 dpi, deskewed, and read with the [Tesseract](https://github.com/tesseract-ocr/tesseract) OCR engine (Apache-2.0); ruled lines are recovered by pixel analysis so tables in old scans are reconstructed too. OCR'd pages carry a provenance comment naming the engine version, page-segmentation mode, dpi and language, and every doubtful number is listed for checking (see below).
 - **Figures are anchored, not dropped.** Embedded images and vector illustrations are detected and placed in reading order with their caption bound to them (`Figure 3: …` above or below); `--extract-images` writes each one as a PNG into `<name>_assets/` and links it.
 - **Equations are quarantined, not silently garbled.** Display equations are detected by math fonts (CMMI/CMSY/CMEX, STIX, Symbol, …) and mathematical Unicode, then emitted as a labelled ```` ```equation ```` block with their number bound to them — so garbled glyph runs stop reading as prose.
-- **Sidebars / callout boxes** (detected as filled background rectangles containing text) are rendered inline as blockquotes at their position in the reading order.
+- **Sidebars / callout boxes** are rendered inline as blockquotes at their position in the reading order, whether they are shaded panels, boxes drawn with a border (a stroked rectangle or four separate lines), or unboxed pull quotes set inset in a different size or face.
 - **Layout-aware:** two-column pages are re-flowed into natural reading order; headings are ranked by font size into `#`–`######`; bulleted and numbered lists are preserved; hyphenated line-wraps are repaired.
 - **Simple UI:** pick PDFs, pick an output folder, press *Convert*. A command-line interface (`pdf2md`) is included for scripting.
 
@@ -61,7 +61,7 @@ For each page with a text layer, the engine:
 
 1. Detects ruled **tables** with lattice analysis ([pdfplumber](https://github.com/jsvine/pdfplumber), MIT).
 2. Detects **borderless (booktabs) tables**: stacked horizontal rules bound a candidate region, column boundaries are found as vertical strips that no line of words crosses, and the grid is rebuilt from word positions. A candidate that doesn't convincingly form a table flows back into body text, so false positives can't destroy content.
-3. Detects **sidebars** as filled background rectangles containing text (outside any table).
+3. Detects **sidebars**: filled panels, ruled boxes (stroked rectangles or four lines meeting at the corners), and — once lines exist — unboxed blocks that are inset from both sides, separated above and below, and set in a different size or face. The unboxed case is gated hard: a line sitting on any column margin is a column, not a callout, and an indented continuation in the body face stays a paragraph.
 4. Rebuilds visual **lines** from positioned words (splitting side-by-side columns that share a baseline), finds the column gutter, and orders every element — paragraphs, tables, sidebars — into a single reading order.
 5. Detects **display equations** and emits them verbatim in a labelled block, keeping them out of the surrounding paragraphs. A math-heavy line that is really a sentence stays prose.
 6. Detects **figures** (embedded rasters and clusters of vector drawing outside tables and sidebars), binds the nearest matching caption, and drops in-figure labels from the prose. A candidate region full of text is discarded so body copy can't be swallowed.
@@ -79,7 +79,7 @@ Because OCR can be wrong in ways geometry cannot detect, every numeric token is 
 
 `--ocr-lang`, `--ocr-dpi` (400 helps small type), `--ocr-psm` and `--no-verify-numbers` tune the OCR pass.
 
-Limitations: output on OCR'd pages is reproducible only for a fixed Tesseract version (which the page comment records) and doubtful numbers are flagged rather than corrected -- an unflagged number is likely but not certain to be right; mathematical equations have no faithful plain-text representation, so display equations are marked and preserved verbatim rather than transcribed (the glyph run inside an `equation` block is not a usable formula, and inline maths within a paragraph is not detected); figures are anchored in place with their captions but are only exported as images with `--extract-images` (equations rendered as figures are therefore images, not text); sidebar detection requires a filled background box.
+Limitations: output on OCR'd pages is reproducible only for a fixed Tesseract version (which the page comment records) and doubtful numbers are flagged rather than corrected -- an unflagged number is likely but not certain to be right; mathematical equations have no faithful plain-text representation, so display equations are marked and preserved verbatim rather than transcribed (the glyph run inside an `equation` block is not a usable formula, and inline maths within a paragraph is not detected); figures are anchored in place with their captions but are only exported as images with `--extract-images` (equations rendered as figures are therefore images, not text); unboxed callouts are only found when they differ typographically from the body, so a callout that is merely indented reads as an ordinary paragraph.
 
 ## Development
 

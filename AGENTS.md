@@ -103,6 +103,11 @@ Both accept `progress=lambda done, total: ...`.
   appear as `<!-- figure: page N, WxHpt at (x,y); image not extracted -->`
   followed by the caption; pass `extract_images` (MCP) or `--extract-images`
   (CLI) to write real PNGs into `<name>_assets/` and link them.
-- Equations come through garbled. Don't present them as faithful.
+- Display equations appear as ```` ```equation ```` blocks preceded by a comment
+  saying the glyphs are not a faithful transcription. Never re-present that
+  content as a formula, and never "tidy it up" into LaTeX — it is a glyph
+  dump, and the operators and scripts in it are frequently wrong or missing.
+  Inline maths inside a paragraph is *not* detected and still comes through
+  garbled.
 - Output is byte-identical across runs for the same input and version, so
   re-running to "get a better result" is pointless.

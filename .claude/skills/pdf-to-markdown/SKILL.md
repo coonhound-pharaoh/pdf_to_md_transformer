@@ -63,7 +63,10 @@ and `convert_file` tools instead of the shell — same engine, same results.
   are only written out with `--extract-images` (into `<name>_assets/`). Without
   it the Markdown carries `<!-- figure: … image not extracted -->` markers — say
   so rather than implying the figures are in the output.
-- Equations come through garbled.
+- Display equations come out as ```` ```equation ```` blocks holding the raw
+  glyph run. Treat them as evidence that maths was there, not as the formula;
+  don't retype them as LaTeX. Inline maths inside a paragraph is still garbled
+  and unmarked.
 - Re-running never changes the output — if it is wrong, the input or the tool
   needs attention, not another attempt.
 

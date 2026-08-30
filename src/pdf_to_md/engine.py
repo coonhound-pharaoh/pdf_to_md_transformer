@@ -43,6 +43,12 @@ from .figures import (
     detect_figure_regions,
     extract_image,
 )
+from .equations import (
+    bare_tag,
+    equation_tag,
+    is_equation_line,
+    render_equation,
+)
 from .geometry import Line, clean_text, order_items, words_to_lines
 from .ocr import (
     OcrOptions,
@@ -202,7 +208,8 @@ def _parse_page_vector(page, page_number: int = 0,
 
     sidebar_regions = _detect_sidebar_regions(page, table_bboxes)
 
-    words = page.extract_words(extra_attrs=["size"], keep_blank_chars=False)
+    words = page.extract_words(extra_attrs=["size", "fontname"],
+                               keep_blank_chars=False)
     words = [w for w in words
              if not any(_center_in(tb, *_word_center(w)) for tb in table_bboxes)]
 
@@ -456,6 +463,27 @@ class _Renderer:
             text = ln.text
             if not text:
                 i += 1
+                continue
+
+            if is_equation_line(text, ln.math):
+                flush()
+                # consecutive equation lines are one displayed equation
+                texts, tag = [], None
+                while i < len(lines) and is_equation_line(lines[i].text,
+                                                          lines[i].math):
+                    texts.append(lines[i].text)
+                    tag = tag or equation_tag(lines[i].text)
+                    last = lines[i]
+                    i += 1
+                # a right-aligned "(3)" sitting beside the equation is its
+                # number, not a paragraph of its own
+                if i < len(lines) and tag is None:
+                    nxt = lines[i]
+                    if bare_tag(nxt.text) and nxt.top < last.bottom \
+                            and nxt.bottom > last.top:
+                        tag = bare_tag(nxt.text)
+                        i += 1
+                blocks.append(render_equation(texts, tag))
                 continue
 
             if self._is_heading(ln):

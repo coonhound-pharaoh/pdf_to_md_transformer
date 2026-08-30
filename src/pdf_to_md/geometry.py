@@ -13,6 +13,8 @@ import statistics
 from dataclasses import dataclass
 from typing import List, Optional
 
+from .equations import math_evidence
+
 _CTRL_RE = re.compile(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -32,6 +34,7 @@ class Line:
     bottom: float
     size: float          # median glyph size on the line
     nchars: int
+    math: float = 0.0    # fraction of glyphs that look mathematical
 
     kind: str = "line"   # constant; used by the ordering code
 
@@ -96,6 +99,7 @@ def make_line(ws) -> Line:
         bottom=max(w["bottom"] for w in ws),
         size=statistics.median(sizes),
         nchars=sum(len(w["text"]) for w in ws),
+        math=math_evidence(ws),
     )
 
 

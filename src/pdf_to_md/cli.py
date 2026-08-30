@@ -19,6 +19,7 @@ import sys
 
 from . import __version__
 from .engine import convert_file, convert_pdf_to_markdown
+from .ocr import OcrOptions
 
 
 def main(argv=None) -> int:
@@ -36,6 +37,17 @@ def main(argv=None) -> int:
     ap.add_argument("--extract-images", action="store_true",
                     help="write figures as PNGs into <name>_assets/ next to "
                          "the Markdown and link them (ignored with --stdout)")
+    ap.add_argument("--ocr-lang", default="eng",
+                    help="Tesseract language for scanned pages (default: eng)")
+    ap.add_argument("--ocr-dpi", type=int, default=300,
+                    help="render resolution for scanned pages (default: 300; "
+                         "400 helps small type)")
+    ap.add_argument("--ocr-psm", type=int, default=3,
+                    help="Tesseract page-segmentation mode (default: 3)")
+    ap.add_argument("--no-verify-numbers", action="store_true",
+                    help="skip the digit re-read pass on scanned pages "
+                         "(faster; numbers are then flagged by confidence "
+                         "alone)")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="print a JSON report of the conversion to stdout")
     ap.add_argument("-q", "--quiet", action="store_true",
@@ -49,6 +61,10 @@ def main(argv=None) -> int:
     # In --json mode stdout carries only the report.
     log = sys.stderr if (args.as_json or args.stdout) else sys.stdout
 
+    ocr_options = OcrOptions(lang=args.ocr_lang, psm=args.ocr_psm,
+                             dpi=args.ocr_dpi,
+                             verify_numbers=not args.no_verify_numbers)
+
     results = []
     failures = 0
     for pdf in args.pdfs:
@@ -61,7 +77,9 @@ def main(argv=None) -> int:
             continue
         try:
             if args.stdout:
-                sys.stdout.write(convert_pdf_to_markdown(pdf))
+                sys.stdout.write(
+                    convert_pdf_to_markdown(pdf,
+                                            ocr_options=ocr_options))
                 entry["ok"] = True
             else:
                 base = os.path.splitext(os.path.basename(pdf))[0] + ".md"
@@ -69,7 +87,8 @@ def main(argv=None) -> int:
                 os.makedirs(outdir, exist_ok=True)
                 out = os.path.join(outdir, base)
                 convert_file(pdf, out,
-                             extract_images=args.extract_images)
+                             extract_images=args.extract_images,
+                             ocr_options=ocr_options)
                 entry.update(ok=True, output=out)
                 if not args.quiet:
                     print(f"OK  {pdf} -> {out}", file=log)

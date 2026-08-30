@@ -34,8 +34,8 @@ Any client with an `mcpServers` config block (Claude Desktop, Codex, …):
 
 | Tool | Arguments | Returns |
 | --- | --- | --- |
-| `convert_pdf` | `path` (required), `max_chars` (default 200000) | the Markdown as text, truncated with an HTML comment if over the limit |
-| `convert_file` | `path` (required), `out_path` *or* `outdir`, `extract_images` | JSON `{output, bytes}` — the written `.md` path |
+| `convert_pdf` | `path` (required), `max_chars` (default 200000), `ocr_lang` | the Markdown as text, truncated with an HTML comment if over the limit |
+| `convert_file` | `path` (required), `out_path` *or* `outdir`, `extract_images`, `ocr_lang` | JSON `{output, bytes}` — the written `.md` path |
 | `pdf_info` | `path` (required) | JSON `{pages, pages_needing_ocr, ocr_available}` |
 
 Tool failures come back as a normal result with `isError: true` and the error
@@ -90,9 +90,15 @@ Both accept `progress=lambda done, total: ...`.
   tesseract-ocr`) or set `PDF2MD_TESSERACT` to a custom binary path.
 - Prefer `convert_file` / `pdf2md -o` over pulling a long document into
   context; read back only the part you need.
-- OCR'd pages carry a `<!-- page N: … converted with OCR … -->` marker. Numbers
-  on those pages should be spot-checked against the source before being relied
-  on.
+- OCR'd pages carry two comments: provenance (`tesseract 5.3.4, psm 3, 300 dpi,
+  lang eng`) and, when anything looked doubtful, a list of the numeric tokens to
+  check against the source. Surface that list to the user rather than dropping
+  it — those are the numbers most likely to be wrong. An *unflagged* number is
+  likely right, not certainly right.
+- Non-English scans need `ocr_lang` (MCP) / `--ocr-lang` (CLI), e.g. `deu` or
+  `fra+eng`; the default is `eng` and a wrong language silently degrades
+  accuracy. `--ocr-dpi 400` helps small type; `--no-verify-numbers` skips the
+  digit re-read pass when speed matters more.
 - Figures are anchored in reading order with their captions. By default they
   appear as `<!-- figure: page N, WxHpt at (x,y); image not extracted -->`
   followed by the caption; pass `extract_images` (MCP) or `--extract-images`

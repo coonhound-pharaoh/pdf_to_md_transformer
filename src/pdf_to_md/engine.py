@@ -44,7 +44,13 @@ from .figures import (
     extract_image,
 )
 from .geometry import Line, clean_text, order_items, words_to_lines
-from .ocr import ocr_available, ocr_page, page_needs_ocr
+from .ocr import (
+    OcrOptions,
+    ocr_available,
+    ocr_page,
+    page_needs_ocr,
+    tesseract_version,
+)
 from .tables import (
     find_h_rules_vector,
     group_rule_regions,
@@ -107,6 +113,7 @@ class PageStream:
     """Ordered content items for one page."""
     items: list = field(default_factory=list)
     note: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
 
 
 def _center_in(bbox, x, y) -> bool:
@@ -289,12 +296,37 @@ def _build_figures(page, page_number, regions, lines, assets) -> List[FigureItem
 # OCR path (scanned pages)
 # --------------------------------------------------------------------------
 
-def _parse_page_ocr(page, page_number: int) -> PageStream:
-    stream = PageStream()
-    stream.note = (f"<!-- page {page_number}: no text layer; "
-                   f"converted with OCR (verify numbers against source) -->")
+MAX_LISTED_SUSPECTS = 12
 
-    words, h_rules, v_rules = ocr_page(page)
+
+def _suspect_note(page_number: int, words) -> Optional[str]:
+    """One comment listing the numeric tokens a reader should check."""
+    flagged = [w for w in words if w.get("suspect")]
+    if not flagged:
+        return None
+    shown = flagged[:MAX_LISTED_SUSPECTS]
+    listed = ", ".join(f"{w['text']!r} ({w['suspect']})" for w in shown)
+    more = ("" if len(flagged) == len(shown)
+            else f", and {len(flagged) - len(shown)} more")
+    n = len(flagged)
+    return (f"<!-- page {page_number}: {n} numeric token"
+            f"{'' if n == 1 else 's'} to check against the source: "
+            f"{listed}{more} -->")
+
+
+def _parse_page_ocr(page, page_number: int,
+                    options: Optional[OcrOptions] = None) -> PageStream:
+    options = options or OcrOptions()
+    stream = PageStream()
+    version = tesseract_version() or "unknown version"
+    stream.note = (f"<!-- page {page_number}: no text layer; converted with "
+                   f"OCR (tesseract {version}, psm {options.psm}, "
+                   f"{options.dpi} dpi, lang {options.lang}) -->")
+
+    words, h_rules, v_rules = ocr_page(page, options)
+    suspects = _suspect_note(page_number, words)
+    if suspects:
+        stream.warnings.append(suspects)
     if not words:
         return stream
 
@@ -507,6 +539,7 @@ class _Renderer:
     def render_stream(self, stream: PageStream) -> None:
         if stream.note:
             self.blocks.append(stream.note)
+        self.blocks.extend(stream.warnings)
 
         pending_lines: List[Line] = []
 
@@ -542,6 +575,7 @@ def convert_pdf_to_markdown(
     progress: Optional[Callable[[int, int], None]] = None,
     assets_dir: Optional[str] = None,
     assets_href: Optional[str] = None,
+    ocr_options: Optional[OcrOptions] = None,
 ) -> str:
     """Convert one PDF file to a Markdown string (content only).
 
@@ -552,13 +586,15 @@ def convert_pdf_to_markdown(
     its caption is emitted in place.
     """
     assets = (assets_dir, assets_href) if assets_dir else None
+    ocr_options = ocr_options or OcrOptions()
     streams: List[PageStream] = []
     with pdfplumber.open(pdf_path) as pdf:
         npages = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
             if page_needs_ocr(page):
                 if ocr_available():
-                    streams.append(_parse_page_ocr(page, i + 1))
+                    streams.append(
+                        _parse_page_ocr(page, i + 1, ocr_options))
                 else:
                     st = PageStream()
                     st.note = (f"<!-- page {i + 1}: scanned image, no text "
@@ -596,7 +632,8 @@ def convert_pdf_to_markdown(
 
 def convert_file(pdf_path: str, out_path: str,
                  progress: Optional[Callable[[int, int], None]] = None,
-                 extract_images: bool = False) -> str:
+                 extract_images: bool = False,
+                 ocr_options: Optional[OcrOptions] = None) -> str:
     """Convert ``pdf_path`` and write the Markdown to ``out_path``.
 
     With ``extract_images``, figures are written as PNGs into a sibling
@@ -610,7 +647,8 @@ def convert_file(pdf_path: str, out_path: str,
             os.path.dirname(os.path.abspath(out_path)), assets_href)
     md = convert_pdf_to_markdown(pdf_path, progress=progress,
                                  assets_dir=assets_dir,
-                                 assets_href=assets_href)
+                                 assets_href=assets_href,
+                                 ocr_options=ocr_options)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(md)
     return out_path

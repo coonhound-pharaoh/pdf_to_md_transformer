@@ -7,17 +7,28 @@ a fixed version + traineddata, so output is reproducible per install.
 Provides:
   * find_tesseract()      -- locate the tesseract binary (bundled, PATH,
                              or well-known install locations)
+  * tesseract_version()   -- version string, for the provenance marker
   * page_needs_ocr(page)  -- True when the page has no usable text layer
-  * ocr_page(page)        -- render @300dpi, deskew, OCR -> word boxes in
-                             PDF points, plus detected horizontal and
-                             vertical rule lines from pixel analysis
+  * ocr_page(page, opts)  -- render, deskew, OCR -> word boxes in PDF
+                             points, plus detected horizontal and vertical
+                             rule lines from pixel analysis
+
+OCR is the one part of the pipeline that can be wrong in ways geometry
+cannot detect, so every OCR result carries its provenance (engine
+version, page-segmentation mode, dpi, language) and every numeric token
+that is doubtful is flagged: low confidence, or disagreement with a
+second read of the same crop restricted to digits.  Verifying a page then
+means checking a handful of marked numbers rather than the whole page.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 import sys
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -25,6 +36,9 @@ from PIL import Image
 
 DPI = 300
 MIN_WORD_CONF = 30.0        # tesseract confidence floor; below is noise
+NUMERIC_CONF = 80.0         # numeric tokens below this are flagged as doubtful
+MAX_RECHECKS = 80           # digit re-reads per page (each is a subprocess)
+RECHECK_PAD_PX = 4          # crop padding for the digit re-read
 BINARIZE_THRESHOLD = 160    # gray level; darker = ink
 LINE_DARK_FRAC = 0.62       # windowed dark fraction that counts as "line"
 LINE_WINDOW_PX = 31         # smoothing window along the line direction
@@ -34,6 +48,16 @@ MAX_LINE_THICKNESS_PX = 14  # thicker dark bands are images, not rules
 
 _tesseract_cmd: Optional[str] = None
 _checked = False
+_version: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OcrOptions:
+    """Knobs that change OCR output -- recorded in the page marker."""
+    lang: str = "eng"
+    psm: int = 3
+    dpi: int = DPI
+    verify_numbers: bool = True
 
 
 def find_tesseract() -> Optional[str]:
@@ -74,6 +98,29 @@ def find_tesseract() -> Optional[str]:
 
 def ocr_available() -> bool:
     return find_tesseract() is not None
+
+
+def tesseract_version() -> Optional[str]:
+    """Version of the installed engine, e.g. "5.3.4" (None if absent).
+
+    Output is reproducible only for a fixed engine version, so the version
+    belongs in the output next to the text it produced.
+    """
+    global _version
+    if _version is not None:
+        return _version or None
+    cmd = find_tesseract()
+    if cmd is None:
+        return None
+    try:
+        out = subprocess.run([cmd, "--version"], capture_output=True,
+                             text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        _version = ""
+        return None
+    m = re.search(r"tesseract\s+v?([0-9][0-9A-Za-z.\-]*)", out)
+    _version = m.group(1) if m else ""
+    return _version or None
 
 
 def page_needs_ocr(page) -> bool:
@@ -181,13 +228,88 @@ def _detect_rules_px(binary: np.ndarray) -> Tuple[List[dict], List[dict]]:
 # main entry
 # --------------------------------------------------------------------------
 
-def ocr_page(page) -> Tuple[List[dict], List[dict], List[dict]]:
+# --------------------------------------------------------------------------
+# numeric verification
+# --------------------------------------------------------------------------
+
+# A token worth double-checking: contains a digit and is otherwise made of
+# characters that appear in numbers (so "1,024.50%" qualifies, "Fig.3b" and
+# ordinary words do not).
+NUMERIC_RE = re.compile(r"^[(\[]?[+-]?[$\u00a3\u20ac]?\d[\d.,:/\u00d7x^\u2013\u2014-]*"
+                        r"\s?[%\u00b0]?[)\]]?[.,;:]?$")
+
+# Characters tesseract is allowed to return when re-reading a number.
+DIGIT_WHITELIST = "0123456789.,%-+()/:$"
+
+
+def is_numeric_token(text: str) -> bool:
+    """True for tokens whose value would be corrupted by a misread glyph."""
+    return bool(text) and any(c.isdigit() for c in text) \
+        and bool(NUMERIC_RE.match(text))
+
+
+def normalise_number(text: str) -> str:
+    """Strip punctuation that the two reads may legitimately disagree on."""
+    return re.sub(r"[^0-9]", "", text)
+
+
+def _reread_digits(img, word, k: float, options: "OcrOptions") -> Optional[str]:
+    """Re-OCR one word's crop with a digit whitelist; None if unavailable."""
+    import pytesseract
+    left = max(0, int(word["x0"] / k) - RECHECK_PAD_PX)
+    top = max(0, int(word["top"] / k) - RECHECK_PAD_PX)
+    right = min(img.width, int(word["x1"] / k) + RECHECK_PAD_PX)
+    bottom = min(img.height, int(word["bottom"] / k) + RECHECK_PAD_PX)
+    if right - left < 2 or bottom - top < 2:
+        return None
+    config = (f"--psm 8 -l {options.lang} "
+              f"-c tessedit_char_whitelist={DIGIT_WHITELIST}")
+    try:
+        out = pytesseract.image_to_string(img.crop((left, top, right, bottom)),
+                                          config=config)
+    except Exception:
+        return None
+    return out.strip()
+
+
+def _flag_numbers(img, words, k: float, options: "OcrOptions") -> None:
+    """Annotate doubtful numeric words in place with a 'suspect' reason.
+
+    Two independent signals: the engine's own confidence, and a second
+    read of the same pixels restricted to digits.  Either one firing is
+    enough to mark the token -- a flagged number is cheap, a silently
+    wrong one is not.
+    """
+    numeric = [w for w in words if is_numeric_token(w["text"])]
+    rechecked = 0
+    for w in numeric:
+        budget_left = rechecked < MAX_RECHECKS
+        if options.verify_numbers and budget_left:
+            rechecked += 1
+            again = _reread_digits(img, w, k, options)
+            if again is not None and normalise_number(again) \
+                    and normalise_number(again) != normalise_number(w["text"]):
+                w["suspect"] = f"reread as {again!r}"
+                continue
+        if w.get("conf", 100.0) < NUMERIC_CONF:
+            reason = f"confidence {w['conf']:.0f}"
+            if options.verify_numbers and not budget_left:
+                # past the per-page budget: confidence is the only signal
+                reason += " (not re-read)"
+            w["suspect"] = reason
+
+
+def ocr_page(page, options: Optional[OcrOptions] = None
+             ) -> Tuple[List[dict], List[dict], List[dict]]:
     """OCR one pdfplumber page.
 
     Returns (words, h_rules, v_rules) with all coordinates in PDF points
-    (same space the vector pipeline uses).  Raises RuntimeError when no
+    (same space the vector pipeline uses).  Words carry ``conf``, and
+    doubtful numeric words additionally carry ``suspect`` -- a short
+    reason the engine caller can surface.  Raises RuntimeError when no
     tesseract binary can be found.
     """
+    options = options or OcrOptions()
     cmd = find_tesseract()
     if cmd is None:
         raise RuntimeError(
@@ -199,12 +321,13 @@ def ocr_page(page) -> Tuple[List[dict], List[dict], List[dict]]:
     import pytesseract
     pytesseract.pytesseract.tesseract_cmd = cmd
 
-    img = page.to_image(resolution=DPI).original.convert("L")
+    img = page.to_image(resolution=options.dpi).original.convert("L")
     img = _deskew(img)
-    k = 72.0 / DPI  # px -> pt
+    k = 72.0 / options.dpi  # px -> pt
 
     data = pytesseract.image_to_data(
-        img, output_type=pytesseract.Output.DICT, config="--psm 3"
+        img, output_type=pytesseract.Output.DICT,
+        config=f"--psm {options.psm} -l {options.lang}",
     )
     words = []
     for i in range(len(data["text"])):
@@ -228,6 +351,8 @@ def ocr_page(page) -> Tuple[List[dict], List[dict], List[dict]]:
             "size": h * k,
             "conf": conf,
         })
+
+    _flag_numbers(img, words, k, options)
 
     binary = np.asarray(img) < BINARIZE_THRESHOLD
     h_px, v_px = _detect_rules_px(binary)

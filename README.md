@@ -5,7 +5,7 @@ A free, open-source (MIT) desktop tool that **converts PDF files into clean, org
 - **Deterministic and mechanical.** Conversion is pure geometry and typography analysis (no cloud, no network calls, no randomness). The same PDF with the same tool version always produces byte-identical Markdown.
 - **Metadata is stripped.** Only page *content* reaches the output. The PDF's Info dictionary, XMP metadata, author/producer strings, etc. are never copied.
 - **Tables come through as Markdown tables**, placed inline exactly where they appear in the document flow — both fully ruled grids and the borderless *booktabs* style (horizontal rules only) used by virtually all scientific journals, reconstructed from column alignment.
-- **Scanned papers are supported.** Pages with no text layer are rendered at 300 dpi, deskewed, and read with the [Tesseract](https://github.com/tesseract-ocr/tesseract) OCR engine (Apache-2.0); ruled lines are recovered by pixel analysis so tables in old scans are reconstructed too. OCR'd pages are marked with an HTML comment (`<!-- page N: … converted with OCR … -->`) so downstream consumers know the provenance.
+- **Scanned papers are supported.** Pages with no text layer are rendered at 300 dpi, deskewed, and read with the [Tesseract](https://github.com/tesseract-ocr/tesseract) OCR engine (Apache-2.0); ruled lines are recovered by pixel analysis so tables in old scans are reconstructed too. OCR'd pages carry a provenance comment naming the engine version, page-segmentation mode, dpi and language, and every doubtful number is listed for checking (see below).
 - **Figures are anchored, not dropped.** Embedded images and vector illustrations are detected and placed in reading order with their caption bound to them (`Figure 3: …` above or below); `--extract-images` writes each one as a PNG into `<name>_assets/` and links it.
 - **Sidebars / callout boxes** (detected as filled background rectangles containing text) are rendered inline as blockquotes at their position in the reading order.
 - **Layout-aware:** two-column pages are re-flowed into natural reading order; headings are ranked by font size into `#`–`######`; bulleted and numbered lists are preserved; hyphenated line-wraps are repaired.
@@ -68,7 +68,16 @@ For each page with a text layer, the engine:
 
 Pages with **no text layer** (scanned papers) are rendered at 300 dpi, deskewed by projection-profile analysis, and read with Tesseract; ruled lines are recovered from pixel runs, and the exact same table-reconstruction and reading-order pipeline runs on the OCR word boxes.
 
-Limitations: output on OCR'd pages is reproducible per Tesseract version but numbers should be spot-checked against the source (the page-level OCR comment marks where); mathematical equations have no faithful plain-text representation and will come through garbled; figures are anchored in place with their captions but are only exported as images with `--extract-images` (equations rendered as figures are therefore images, not text); sidebar detection requires a filled background box.
+Because OCR can be wrong in ways geometry cannot detect, every numeric token is checked twice: against Tesseract's own confidence, and against a second read of the same pixels restricted to digits. Tokens that fail either check are named in a per-page comment, so verifying a scan means checking a handful of marked numbers instead of the whole page:
+
+```
+<!-- page 3: no text layer; converted with OCR (tesseract 5.3.4, psm 3, 300 dpi, lang eng) -->
+<!-- page 3: 2 numeric tokens to check against the source: '12.5' (confidence 61), '1,024' (reread as '1.024') -->
+```
+
+`--ocr-lang`, `--ocr-dpi` (400 helps small type), `--ocr-psm` and `--no-verify-numbers` tune the OCR pass.
+
+Limitations: output on OCR'd pages is reproducible only for a fixed Tesseract version (which the page comment records) and doubtful numbers are flagged rather than corrected -- an unflagged number is likely but not certain to be right; mathematical equations have no faithful plain-text representation and will come through garbled; figures are anchored in place with their captions but are only exported as images with `--extract-images` (equations rendered as figures are therefore images, not text); sidebar detection requires a filled background box.
 
 ## Development
 

@@ -25,6 +25,7 @@ from typing import Any, Dict
 
 from . import __version__
 from .engine import convert_file, convert_pdf_to_markdown
+from .ocr import OcrOptions
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -40,13 +41,20 @@ TOOLS = [
             "Offline and deterministic: same file + same version -> same "
             "output. Tables (ruled and borderless) and sidebars are placed "
             "inline; PDF metadata is never included. Scanned pages are OCR'd "
-            "when Tesseract is available and marked with an HTML comment."
+            "when Tesseract is available; every OCR'd page is marked with "
+            "its provenance and any doubtful numbers are listed in an HTML "
+            "comment for checking."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string",
                          "description": "Absolute or relative path to the PDF."},
+                "ocr_lang": {
+                    "type": "string",
+                    "description": ("Tesseract language for scanned pages "
+                                    "(default 'eng', e.g. 'deu', 'fra+eng')."),
+                },
                 "max_chars": {
                     "type": "integer",
                     "description": (
@@ -73,6 +81,11 @@ TOOLS = [
                 "path": {"type": "string", "description": "Path to the PDF."},
                 "out_path": {"type": "string",
                              "description": "Exact .md path to write."},
+                "ocr_lang": {
+                    "type": "string",
+                    "description": ("Tesseract language for scanned pages "
+                                    "(default 'eng', e.g. 'deu', 'fra+eng')."),
+                },
                 "extract_images": {
                     "type": "boolean",
                     "description": ("Also write each figure as a PNG into a "
@@ -120,10 +133,16 @@ def _require_pdf(args: Dict[str, Any]) -> str:
     return path
 
 
+def _ocr_options(args: Dict[str, Any]) -> OcrOptions:
+    lang = args.get("ocr_lang")
+    return OcrOptions(lang=lang) if isinstance(lang, str) and lang \
+        else OcrOptions()
+
+
 def _tool_convert_pdf(args: Dict[str, Any]) -> str:
     path = _require_pdf(args)
     limit = args.get("max_chars", DEFAULT_MAX_CHARS)
-    md = convert_pdf_to_markdown(path)
+    md = convert_pdf_to_markdown(path, ocr_options=_ocr_options(args))
     if isinstance(limit, int) and limit > 0 and len(md) > limit:
         md = (md[:limit]
               + f"\n\n<!-- truncated at {limit} of {len(md)} characters; "
@@ -141,7 +160,8 @@ def _tool_convert_file(args: Dict[str, Any]) -> str:
     parent = os.path.dirname(os.path.abspath(out_path))
     os.makedirs(parent, exist_ok=True)
     convert_file(path, out_path,
-                 extract_images=bool(args.get('extract_images')))
+                 extract_images=bool(args.get('extract_images')),
+                 ocr_options=_ocr_options(args))
     return json.dumps({"output": out_path,
                        "bytes": os.path.getsize(out_path)}, indent=2)
 

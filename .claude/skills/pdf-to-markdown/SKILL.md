@@ -53,8 +53,12 @@ and `convert_file` tools instead of the shell — same engine, same results.
   explanatory HTML comment. Say so; don't report a clean conversion. Fix with
   `brew install tesseract` / `apt install tesseract-ocr`, or point
   `PDF2MD_TESSERACT` at a binary.
-- OCR'd pages are marked `<!-- page N: … converted with OCR … -->`. Spot-check
-  numbers on those pages against the source before relying on them.
+- OCR'd pages carry a provenance comment (engine version, psm, dpi, language)
+  and, where anything looked doubtful, a list of numeric tokens to check
+  against the source. Pass that list on to the user — don't strip it. An
+  unflagged number is likely right, not certainly right.
+- For a non-English scan pass `--ocr-lang` (e.g. `deu`, `fra+eng`); the default
+  `eng` silently degrades other languages.
 - Figures are anchored in place with their captions, but the images themselves
   are only written out with `--extract-images` (into `<name>_assets/`). Without
   it the Markdown carries `<!-- figure: … image not extracted -->` markers — say
